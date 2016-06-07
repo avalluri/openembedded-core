@@ -29,11 +29,12 @@ S = "${WORKDIR}"
 
 INHIBIT_DEFAULT_DEPS = "1"
 
+MERGEDDIRS = "/bin /${baselib} /sbin"
 docdir_append = "/${P}"
 dirs1777 = "/tmp ${localstatedir}/volatile/tmp"
 dirs2775 = ""
-dirs755 = "/bin /boot /dev ${sysconfdir} ${sysconfdir}/default \
-           ${sysconfdir}/skel /lib /mnt /proc ${ROOT_HOME} /run /sbin \
+dirs755 = "/boot /dev ${sysconfdir} ${sysconfdir}/default \
+           ${sysconfdir}/skel /mnt /proc ${ROOT_HOME} /run \
            ${prefix} ${bindir} ${docdir} /usr/games ${includedir} \
            ${libdir} ${sbindir} ${datadir} \
            ${datadir}/common-licenses ${datadir}/dict ${infodir} \
@@ -42,8 +43,8 @@ dirs755 = "/bin /boot /dev ${sysconfdir} ${sysconfdir}/default \
            /sys ${localstatedir}/lib/misc ${localstatedir}/spool \
            ${localstatedir}/volatile \
            ${localstatedir}/volatile/log \
-           /home ${prefix}/src ${localstatedir}/local \
-           /media"
+           /home ${prefix}/src ${localstatedir}/local /media \
+           ${@bb.utils.contains('DISTRO_FEATURES', 'usrmerge', '', '${MERGEDDIRS}', d)}"
 
 dirs755-lsb = "/srv  \
                ${prefix}/local ${prefix}/local/bin ${prefix}/local/games \
@@ -104,6 +105,13 @@ do_install () {
 	for d in ${volatiles}; do
 		ln -sf volatile/$d ${D}${localstatedir}/$d
 	done
+
+	if [ "${@bb.utils.contains('DISTRO_FEATURES', 'usrmerge', '1', '0', d)}" = "1" ] ; then
+		for d in ${MERGEDDIRS}; do
+			lnr ${D}${exec_prefix}$d ${D}$d
+
+		done
+	fi
 
 	ln -snf ../run ${D}${localstatedir}/run
 	ln -snf ../run/lock ${D}${localstatedir}/lock
