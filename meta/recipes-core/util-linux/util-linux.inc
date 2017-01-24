@@ -187,7 +187,7 @@ do_install () {
 # reset and nologin causes a conflict with ncurses-native and shadow-native
 do_install_append_class-native () {
 	rm -f ${D}${base_bindir}/reset
-	rm -f ${D}${base_sbindir}/nologin
+	rm -f ${D}${sbindir}/nologin
 }
 
 ALTERNATIVE_PRIORITY = "80"
@@ -195,6 +195,7 @@ ALTERNATIVE_PRIORITY = "80"
 ALTERNATIVE_${PN}  = "dmesg kill more mkswap blockdev pivot_root switch_root"
 ALTERNATIVE_${PN} += "hexdump last lastb logger mesg renice wall"
 ALTERNATIVE_${PN} += "setsid chrt flock utmpdump eject"
+ALTERNATIVE_${PN}_class-target += "nologin"
 
 ALTERNATIVE_LINK_NAME[dmesg] = "${base_bindir}/dmesg"
 ALTERNATIVE_LINK_NAME[kill] = "${base_bindir}/kill"
@@ -204,6 +205,7 @@ ALTERNATIVE_LINK_NAME[blockdev] = "${base_sbindir}/blockdev"
 ALTERNATIVE_LINK_NAME[pivot_root] = "${base_sbindir}/pivot_root"
 ALTERNATIVE_LINK_NAME[switch_root] = "${base_sbindir}/switch_root"
 ALTERNATIVE_LINK_NAME[eject] = "${bindir}/eject"
+ALTERNATIVE_LINK_NAME[nologin] = "${sbindir}/nologin"
 
 ALTERNATIVE_${PN}-doc = "mountpoint.1 last.1 lastb.1 mesg.1 wall.1 nologin.8 sulogin.8 utmpdump.1 reset.1 kill.1 libblkid.3 blkid.8 findfs.8 fsck.8 uuid.3"
 
