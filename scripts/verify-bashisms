@@ -24,8 +24,9 @@ def is_whitelisted(s):
 
 SCRIPT_LINENO_RE = re.compile(r' line (\d+) ')
 BASHISM_WARNING = re.compile(r'^(possible bashism in.*)$', re.MULTILINE)
+SHELLCHECK_LINENO_RE = re.compile(r'^(In .* line )(\d+):$', re.MULTILINE)
 
-def process(filename, function, lineno, script):
+def process(filename, function, lineno, script, shellcheck):
     import tempfile
 
     if not script.startswith("#!"):
@@ -35,10 +36,10 @@ def process(filename, function, lineno, script):
     fn.write(script)
     fn.flush()
 
+    results = []
     try:
         subprocess.check_output(("checkbashisms.pl", fn.name), universal_newlines=True, stderr=subprocess.STDOUT)
-        # No bashisms, so just return
-        return
+        # No bashisms, so just continue
     except subprocess.CalledProcessError as e:
         # TODO check exit code is 1
 
@@ -48,33 +49,53 @@ def process(filename, function, lineno, script):
             # Probably starts with or contains only warnings. Dump verbatim
             # with one space indention. Can't do the splitting and whitelist
             # checking below.
-            return '\n'.join([filename,
-                              ' Unexpected output from checkbashisms.pl'] +
-                             [' ' + x for x in output.splitlines()])
-
-        # We know that the first line matches and that therefore the first
-        # list entry will be empty - skip it.
-        output = BASHISM_WARNING.split(output)[1:]
-        # Turn the output into a single string like this:
-        # /.../foobar.bb
-        #  possible bashism in updatercd_postrm line 2 (type):
-        #   if ${@use_updatercd(d)} && type update-rc.d >/dev/null 2>/dev/null; then
-        #  ...
-        #   ...
-        result = []
-        # Check the results against the whitelist
-        for message, source in zip(output[0::2], output[1::2]):
-            if not is_whitelisted(source):
-                if lineno is not None:
-                    message = SCRIPT_LINENO_RE.sub(lambda m: ' line %d ' % (int(m.group(1)) + int(lineno) - 1),
-                                                   message)
-                result.append(' ' + message.strip())
-                result.extend(['  %s' % x for x in source.splitlines()])
-        if result:
-            result.insert(0, filename)
-            return '\n'.join(result)
+            results.extend([' Unexpected output from checkbashisms.pl'] +
+                           [' ' + x for x in output.splitlines()])
         else:
-            return None
+            # We know that the first line matches and that therefore the first
+            # list entry will be empty - skip it.
+            output = BASHISM_WARNING.split(output)[1:]
+            # Turn the output into a single string like this:
+            # /.../foobar.bb
+            #  possible bashism in updatercd_postrm line 2 (type):
+            #   if ${@use_updatercd(d)} && type update-rc.d >/dev/null 2>/dev/null; then
+            #  ...
+            #   ...
+            # Check the results against the whitelist
+            for message, source in zip(output[0::2], output[1::2]):
+                if not is_whitelisted(source):
+                    if lineno is not None:
+                        message = SCRIPT_LINENO_RE.sub(lambda m: ' line %d ' % (int(m.group(1)) + int(lineno) - 1),
+                                                       message)
+                    results.append(' ' + message.strip())
+                    results.extend(['  %s' % x for x in source.splitlines()])
+
+    if shellcheck:
+        try:
+            excluded = []
+            # SC2003 warns about using expr instead of $(( )).
+            # bitbake's shell parser chokes on $(( )), so expr
+            # is what embedded scripts have to use - ignore the warning.
+            excluded.append("SC2003")
+            subprocess.check_output(["shellcheck", "--shell=%s" % shellcheck] +
+                                    ["-e%s" % x for x in excluded] +
+                                    [fn.name],
+                                    universal_newlines=True, stderr=subprocess.STDOUT)
+            # No shell warnings, so just continue.
+        except subprocess.CalledProcessError as e:
+            # Replace the temporary filename with the function,
+            # update line numbers and indent the output.
+            output = e.output.replace(fn.name, function)
+            results.extend([' ' +
+                            (x if lineno is None else
+                             SHELLCHECK_LINENO_RE.sub(lambda m: m.group(1) + str(int(m.group(2)) + int(lineno) - 1), x))
+                            for x in output.splitlines()])
+
+    if results:
+        results.insert(0, filename)
+        return '\n'.join(results)
+    else:
+        return None
 
 def get_tinfoil():
     scripts_path = os.path.dirname(os.path.realpath(__file__))
@@ -94,12 +115,16 @@ if __name__=='__main__':
         print("Cannot find checkbashisms.pl on $PATH, get it from https://anonscm.debian.org/cgit/collab-maint/devscripts.git/plain/scripts/checkbashisms.pl")
         sys.exit(1)
 
+    if shutil.which("shellcheck") is None:
+        print("Cannot find shellcheck on $PATH, get it from your distro or https://www.shellcheck.net/")
+        sys.exit(1)
+
     # The order of defining the worker function,
     # initializing the pool and connecting to the
     # bitbake server is crucial, don't change it.
     def func(item):
-        (filename, key, lineno), script = item
-        return process(filename, key, lineno, script)
+        (filename, key, lineno), (script, shellcheck) = item
+        return process(filename, key, lineno, script, shellcheck)
 
     import multiprocessing
     pool = multiprocessing.Pool()
@@ -129,16 +154,22 @@ if __name__=='__main__':
                 data = tinfoil.parse_recipe_file(realfn)
                 for key in data.keys():
                     if data.getVarFlag(key, "func") and not data.getVarFlag(key, "python"):
+                        # Do not expand by default, it could change line numbers.
                         script = data.getVar(key, False)
+                        if script and '${@' in script:
+                            # Embedded Python code confuses the checkers too much,
+                            # we have to expand.
+                            script = data.getVar(key, True)
                         if script:
                             filename = data.getVarFlag(key, "filename")
                             lineno = data.getVarFlag(key, "lineno")
+                            shellcheck = data.getVarFlag(key, "shellcheck")
                             # There's no point in checking a function multiple
                             # times just because different recipes include it.
                             # We identify unique scripts by file, name, and (just in case)
                             # line number.
                             attributes = (filename or realfn, key, lineno)
-                            scripts.setdefault(attributes, script)
+                            scripts.setdefault(attributes, (script, shellcheck))
 
 
     print("Scanning scripts...\n")
